@@ -1,0 +1,360 @@
+% MWrap file for C demo w/ OpenMP.
+% Generates gateway.c, array2d.m and array2domp.m.
+% Illustrates inout type, and multiple interfaces in a single gateway.
+% First see ../c/demo.mw on which this example builds.
+% --------------------------------------------------------------------------
+$[
+#include <uchar.h>
+int countfaces(const int nte,const  int* te2p,const double* condu,int* np);
+void makeBEMmesh(const int nte,const  int* te2p,const double* p,const double* condu,int* t2p,double* pbem,double* epseff);
+$]
+
+@function [Efield,t2p,p,epseff,xval]=runcode(te2p,p,rs,js,conductivity,ro)
+%zeroth order BEM code
+%       FEMord is the order of FEM desired
+%       tetrahedron to node id (te2p): dimensions 4 by number of tetrahedrons
+%       node locations (p): dimensions 3 cartesian coordinate (x,y,z) by number of nodes
+%       electric dipole source locations (rs): dimensions 3 cartesian coordinate (x,y,z) by
+%       number of dipole locations
+%       electric dipole source weights (js): 3 dimensions by
+%       number of dipole locations
+%       conductivity (conductivity): nte dimensional column vector of conductivity values
+%       ro is 3 by number of observation points
+%       Efield is the Efield at points ro
+
+%% Step 1 Extract BEM surface data structures
+tic
+[t2p,p,epseff]=genbemmesh(te2p,p,conductivity);
+  nt=numel(t2p(1,:));
+  np=numel(p(1,:));
+  nc=numel(rs(1,:));
+Generate_mesh_time=toc
+%% Step 2 Generate BEM matrix data structures
+tic
+
+v1=p(:,t2p(1,:))-p(:,t2p(3,:));
+v2=p(:,t2p(2,:))-p(:,t2p(3,:));
+normal=cross(v1,v2,1);
+area=sqrt(normal(1,:).^2+normal(2,:).^2+normal(3,:).^2);
+normal(1,:)=normal(1,:)./area;
+normal(2,:)=normal(2,:)./area;
+normal(3,:)=normal(3,:)./area;
+area=area/2;
+
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+
+nquad=[3,16];
+iprec=[0.001,0.005];
+
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=0.5;
+iter=0;
+relres=1;
+del=dnear*sqrt(mean(area(:))*2);
+# FORTRAN generategroupct(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[1] ncol);
+
+# FORTRAN generategroupmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[ncol] col,output int[ncol] row,int[1] ncol);
+row=row(col~=0);
+col=col(col~=0);
+ncols=numel(col);
+nt3=nquad(1)*nt;
+# FORTRAN createbemdatastructmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] area,double[3,nt] normal,int[ncols] row,int[ncols] col,int[1] ncols, output double[ncols] potout, output double[3,nt3] triafl, int[2] nquad,output int[nt3] colch, output int[nt3] rowch, output double[nt3] volch);
+col=col(abs(potout)>10^-14*max(abs(potout)));
+row=row(abs(potout)>10^-14*max(abs(potout)));
+potout=potout(abs(potout)>10^-14*max(abs(potout)));
+Anear=sparse(row,col,potout,nt,nt);%transpose of Anear
+clear col row potout;
+Ach=sparse(colch,rowch,volch);
+clear colch rowch volch;
+Time_for_matrix=toc
+%% step 3 compute rhs
+tic
+# FORTRAN computerhsmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] epseff,double[3,nc] rs,double[3,nc] js,int[1] nc,double[2] iprec,output double[nt] rhs);
+
+Time_for_RHS=toc
+%% step 4 solve system of equations
+epseff2=epseff(:)./area(:)/(4*pi);
+xval=tfqmr(@(x)matvec(x,triafl,nquad(1)*nt,Ach,Anear,normal,epseff2), ...
+rhs,10^-7,100,[],[],rhs);
+
+BEM_matrix_time=toc
+
+%% Step 5 generate obseravtions
+tic
+Efield=computeEfields(t2p,nt,p,np,epseff(:),rs,js,nc,xval,ro,numel(ro(:))/3);
+Evaluate_field_time=toc
+
+end
+function y=matvec(x,triafl,nfmm,Ach,Anear,nhat,epseff)
+chspace=Ach'*x;
+iprec=[0.005 0.005];
+# FORTRAN fmmchargematlab(double[nfmm] chspace,double[3,nfmm] triafl,int[1] nfmm,output double[3,nfmm] fld,double[2] iprec);
+y=Anear*x;
+y=y+(nhat(1,:)').*(Ach*(fld(1,:)'));
+y=y+(nhat(2,:)').*(Ach*(fld(2,:)'));
+y=y+(nhat(3,:)').*(Ach*(fld(3,:)'));
+y=epseff.*y;
+y=x*0.5-y;
+end
+
+
+@function [Efield,t2p,p,epseff,xval]=runcodeks(te2p,p,rs,js,conductivity,ro)
+%zeroth order BEM code
+%       FEMord is the order of FEM desired
+%       tetrahedron to node id (te2p): dimensions 4 by number of tetrahedrons
+%       node locations (p): dimensions 3 cartesian coordinate (x,y,z) by number of nodes
+%       electric dipole source locations (rs): dimensions 3 cartesian coordinate (x,y,z) by
+%       number of dipole locations
+%       electric dipole source weights (js): 3 dimensions by
+%       number of dipole locations
+%       conductivity (conductivity): nte dimensional column vector of conductivity values
+%       ro is 3 by number of observation points
+%       Efield is the Efield at points ro
+
+%% Step 1 Extract BEM surface data structures
+tic
+[t2p,p,epseff]=genbemmesh(te2p,p,conductivity);
+  nt=numel(t2p(1,:));
+  np=numel(p(1,:));
+  nc=numel(rs(1,:));
+Generate_mesh_time=toc
+%% Step 2 Generate BEM matrix data structures
+tic
+
+v1=p(:,t2p(1,:))-p(:,t2p(3,:));
+v2=p(:,t2p(2,:))-p(:,t2p(3,:));
+normal=cross(v1,v2,1);
+area=sqrt(normal(1,:).^2+normal(2,:).^2+normal(3,:).^2);
+normal(1,:)=normal(1,:)./area;
+normal(2,:)=normal(2,:)./area;
+normal(3,:)=normal(3,:)./area;
+area=area/2;
+
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+
+nquad=[3,16];
+iprec=[0.001,0.005];
+
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=0.5;
+iter=0;
+relres=1;
+del=dnear*sqrt(mean(area(:))*2);
+# FORTRAN generategroupct(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[1] ncol);
+
+# FORTRAN generategroupmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[ncol] col,output int[ncol] row,int[1] ncol);
+row=row(col~=0);
+col=col(col~=0);
+ncols=numel(col);
+nt3=nquad(1)*nt;
+# FORTRAN createbemdatastructmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] area,double[3,nt] normal,int[ncols] row,int[ncols] col,int[1] ncols, output double[ncols] potout, output double[3,nt3] triafl, int[2] nquad,output int[nt3] colch, output int[nt3] rowch, output double[nt3] volch);
+col=col(abs(potout)>10^-14*max(abs(potout)));
+row=row(abs(potout)>10^-14*max(abs(potout)));
+potout=potout(abs(potout)>10^-14*max(abs(potout)));
+Anear=sparse(row,col,potout,nt,nt);%transpose of Anear
+clear col row potout;
+Ach=sparse(colch,rowch,volch);
+clear colch rowch volch;
+Time_for_matrix=toc
+%% step 3 compute rhs
+tic
+# FORTRAN computerhsmatlabks(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] epseff,double[3,nc] rs,double[3,nc] js,int[1] nc,double[2] iprec,output double[nt] rhs);
+
+Time_for_RHS=toc
+%% step 4 solve system of equations
+epseff2=epseff(:)./area(:)/(4*pi);
+xval=tfqmr(@(x)matvec(x,triafl,nquad(1)*nt,Ach,Anear,normal,epseff2), ...
+rhs,10^-7,100,[],[],rhs);
+
+BEM_matrix_time=toc
+
+%% Step 5 generate obseravtions
+tic
+Efield=computeEfieldsks(t2p,nt,p,np,epseff(:),rs,js,nc,xval,ro,numel(ro(:))/3);
+Evaluate_field_time=toc
+
+end
+function y=matvec(x,triafl,nfmm,Ach,Anear,nhat,epseff)
+chspace=Ach'*x;
+iprec=[0.005 0.005];
+# FORTRAN fmmchargematlab(double[nfmm] chspace,double[3,nfmm] triafl,int[1] nfmm,output double[3,nfmm] fld,double[2] iprec);
+y=Anear*x;
+y=y+(nhat(1,:)').*(Ach*(fld(1,:)'));
+y=y+(nhat(2,:)').*(Ach*(fld(2,:)'));
+y=y+(nhat(3,:)').*(Ach*(fld(3,:)'));
+y=epseff.*y;
+y=x*0.5-y;
+end
+
+
+@function [Efield,t2p,p,epseff,xval]=runcodeold(te2p,p,rs,js,conductivity,ro)
+%zeroth order BEM code
+%       FEMord is the order of FEM desired
+%       tetrahedron to node id (te2p): dimensions 4 by number of tetrahedrons
+%       node locations (p): dimensions 3 cartesian coordinate (x,y,z) by number of nodes
+%       electric dipole source locations (rs): dimensions 3 cartesian coordinate (x,y,z) by
+%       number of dipole locations
+%       electric dipole source weights (js): 3 dimensions by
+%       number of dipole locations
+%       conductivity (conductivity): nte dimensional column vector of conductivity values
+%       ro is 3 by number of observation points
+%       Efield is the Efield at points ro
+
+%% Step 1 Extract BEM surface data structures
+tic
+[t2p,p,epseff]=genbemmesh(te2p,p,conductivity);
+  nt=numel(t2p(1,:));
+  np=numel(p(1,:));
+  nc=numel(rs(1,:));
+Generate_mesh_time=toc
+%% Step 2 Generate BEM matrix data structures
+tic
+xval=bemsolver(t2p,nt,p,np,reg,rs,js,nc);
+solve_time=toc
+%% Step 3 generate obseravtions
+tic
+Efield=computeEfields(t2p,nt,p,np,epseff(:),rs,js,nc,xval,ro,numel(ro(:))/3);
+Evaluate_field_time=toc
+
+
+@function [t2p,p2,epseff]=genbemmesh(te2p,p,condu)
+%extracts tissue boundary faces from the tetrahedron mesh
+%te2p is the 4 by number of tetrahedrons element array
+%p is the 3 by number of points node location array
+%condu is the number of tetrahedron by one conductivity array
+%t2p is 3 by number of boundary triangles
+%p2 is the boundary triangle point array
+%epseff is the (conductivity_inner-conductivity_outer)/(conductivity_inner+conductivity_outer) array
+te2p=te2p-1;
+nte=numel(te2p)/4;
+np=numel(p)/3;np2=0;
+# int nf=countfaces(int nte,int[4,nte] te2p,double[nte] condu,inout int[1] np2);
+t2p=zeros([3,nf]);
+p2=zeros([3,np2]);
+epseff=zeros([nf,1]);
+# makeBEMmesh(int nte,int[4,nte] te2p,double[3,np] p,double[nte] condu,inout int[3,nf] t2p,inout double[3,np2] p2,inout double[nf] epseff);
+t2p=t2p+1;
+
+@function xval=bemsolver(t2p,nt,p,np,reg,rs,js,nc)
+%nt number of triangles
+%np number of points
+%nc number of coil dipoles
+%t2p triangle to points (3 by nt)
+%p cartesian point coordinates (3 by np)
+%epseff contrast function  (conductivity_inner-conductivity_outer)/(conductivity_inner+conductivity_outer)  (nt by 1)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%xval is the magnitude of the charge on each face (i.e. pulse basis expansion coefficients)
+xval=zeros([nt 1]);
+
+%%%%%%%%%%%%modify the following at your own risk%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+
+nquad=[3,16];
+%iprec(1) FMM precision flag for computing E-primary iprec(2) and FMM precision flag for matrix vector multiply. Values of iprec 0,1,2,3,4,and 5 typically provide errors of FMM accuracy of 2,3,6,9,12,and 14 digits, respectivelly. Recommended value iprec=[1,0] and [2,0] for error lower than 0.1%.
+iprec=[0.001,0.001];
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=0.5;
+iter=0;
+relres=1;
+% Note: treated as contiguous 1D array as far as C is concerned:
+# FORTRAN bemsolver(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] reg,double[3,nc] rs,double[3,nc] js,int[1] nc,output double* xval,int[2] nquad,double[2] iprec,double[1] dnear,output int[1] iter,output double[1] relres);
+
+
+
+iter
+relres
+
+
+
+@function xval=bemsolverks(t2p,nt,p,np,reg,rs,js,nc)
+%nt number of triangles
+%np number of points
+%nc number of coil dipoles
+%t2p triangle to points (3 by nt)
+%p cartesian point coordinates (3 by np)
+%epseff contrast function  (conductivity_inner-conductivity_outer)/(conductivity_inner+conductivity_outer)  (nt by 1)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%xval is the magnitude of the charge on each face (i.e. pulse basis expansion coefficients)
+xval=zeros([nt 1]);
+
+%%%%%%%%%%%%modify the following at your own risk%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+
+nquad=[3,16];
+%iprec(1) FMM precision flag for computing E-primary iprec(2) and FMM precision flag for matrix vector multiply. Values of iprec 0,1,2,3,4,and 5 typically provide errors of FMM accuracy of 2,3,6,9,12,and 14 digits, respectivelly. Recommended value iprec=[1,0] and [2,0] for error lower than 0.1%.
+iprec=[0.001,0.001];
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=0.5;
+iter=0;
+relres=1;
+% Note: treated as contiguous 1D array as far as C is concerned:
+
+# FORTRAN bemsolverks(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] reg,double[3,nc] rs,double[3,nc] js,int[1] nc,output double* xval,int[2] nquad,double[2] iprec,double[1] dnear,output int[1] iter,output double[1] relres);
+
+
+
+iter
+relres
+
+
+@function Etotal=computeEfields(t2p,nt,p,np,reg,rs,js,nc,xval,robs,nobs)
+%nt number of triangles
+%np number of points
+%nc number of coil dipoles
+%nobs number of observation points
+%t2p triangle to points (3 by nt)
+%p cartesian point coordinates (3 by np)
+%epseff contrast function (eps2-eps1)/(eps2+eps1) (nt by 1)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%xval charge weights from BEM solution  (i.e. pulse basis expansion coefficients)
+%robs locations for E-field evaluation
+Etotal=zeros([3,nobs]);
+
+%%%%%%%%%%%%modify the following at your own risk%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+nquad=[3,16];
+%iprec(1) FMM precision flag for computing E-primary iprec(2) and FMM precision flag for matrix vector multiply. Values of iprec 0,1,2,3,4,and 5 typically provide errors of FMM accuracy of 2,3,6,9,12,and 14 digits, respectivelly. Recommended value iprec=[1,0] and [2,0] for error lower than 0.1%.
+iprec=[0.001,0.005];
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=1;
+
+% Note: treated as contiguous 1D array as far as C/FORTRAN is concerned:
+# FORTRAN evaluateEfieldks(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] reg,double[3,nc] rs,double[3,nc] js,int[1] nc,double[nt] xval,double[3,nobs] robs,int[1] nobs,inout double[3,nobs] Etotal,int[2] nquad,double[2] iprec,double[1] dnear);
+
+@function Etotal=computeEfields(t2p,nt,p,np,reg,rs,js,nc,xval,robs,nobs)
+%nt number of triangles
+%np number of points
+%nc number of coil dipoles
+%nobs number of observation points
+%t2p triangle to points (3 by nt)
+%p cartesian point coordinates (3 by np)
+%epseff contrast function (eps2-eps1)/(eps2+eps1) (nt by 1)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%rs cartesian locations of electrical dipoles (3 by nc)
+%js electrical dipole weight and direction (3 by nc)
+%xval charge weights from BEM solution  (i.e. pulse basis expansion coefficients)
+%robs locations for E-field evaluation
+Etotal=zeros([3,nobs]);
+
+%%%%%%%%%%%%modify the following at your own risk%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%See supplemental material for explanation of these parameters
+%nquad(1) is the number of quadrature points on the far triangle interactions nquad(2) number of quadrature points on near interactions valid inputs are (1,3,16). Suggested is 1 point and 16 for near
+nquad=[3,16];
+%iprec(1) FMM precision flag for computing E-primary iprec(2) and FMM precision flag for matrix vector multiply. Values of iprec 0,1,2,3,4,and 5 typically provide errors of FMM accuracy of 2,3,6,9,12,and 14 digits, respectivelly. Recommended value iprec=[1,0] and [2,0] for error lower than 0.1%.
+iprec=[0.001,0.005];
+%dnear is number of average edge lengths of the near-field interactions. Our tests indicate that this is accurate enough for FEM simulations.
+dnear=1;
+
+% Note: treated as contiguous 1D array as far as C/FORTRAN is concerned:
+# FORTRAN evaluateEfieldks(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[nt] reg,double[3,nc] rs,double[3,nc] js,int[1] nc,double[nt] xval,double[3,nobs] robs,int[1] nobs,inout double[3,nobs] Etotal,int[2] nquad,double[2] iprec,double[1] dnear);

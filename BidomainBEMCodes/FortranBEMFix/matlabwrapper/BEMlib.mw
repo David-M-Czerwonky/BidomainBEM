@@ -1,0 +1,404 @@
+% MWrap file for C demo w/ OpenMP.
+% Generates gateway.c, array2d.m and array2domp.m.
+% Illustrates inout type, and multiple interfaces in a single gateway.
+% First see ../c/BEMlib.mw on which this example builds.
+% --------------------------------------------------------------------------
+$[
+#include <uchar.h>
+int countfaces(const int nte,const  int* te2p,const int* regid,int* np);
+void makeBEMmesh(const int nte,const  int* te2p,const double* p,const double* conduvals,const int* regid,int* t2p,double* pbem,double* sigdiff,double* sigav,double* rhotoIm);
+int countfaceslegacy(const int nte,const  int* te2p,const double* condu,int* np);
+void makeBEMmeshlegacy(const int nte,const  int* te2p,const double* p,const double* condu,int* t2p,double* pbem,double* epseff);
+$]
+
+@function [t2p,p2,epseff]=genbemmesh_legacy(te2p,p,condu)
+%extracts tissue boundary faces from the tetrahedron mesh
+%te2p is the 4 by number of tetrahedrons element array
+%p is the 3 by number of points node location array
+%condu is the number of tetrahedron by one conductivity array
+%t2p is 3 by number of boundary triangles
+%p2 is the boundary triangle point array
+%epseff is the (conductivity_inner-conductivity_outer)/(conductivity_inner+conductivity_outer) array
+te2p=te2p-1;
+nte=numel(te2p)/4;
+np=numel(p)/3;np2=0;
+# int nf=countfaceslegacy(int nte,int[4,nte] te2p,double[nte] condu,inout int[1] np2);
+t2p=zeros([3,nf]);
+p2=zeros([3,np2]);
+epseff=zeros([nf,1]);
+# makeBEMmeshlegacy(int nte,int[4,nte] te2p,double[3,np] p,double[nte] condu,inout int[3,nf] t2p,inout double[3,np2] p2,inout double[nf] epseff);
+t2p=t2p+1;
+
+@function [t2p,p2,sigdiff,sigav,rhotoIm]=genbemmesh(te2p,p,condu,regid)
+%extracts tissue boundary faces from the tetrahedron mesh
+%te2p is the 4 by number of tetrahedrons element array
+%p is the 3 by number of points node location array
+%condu is the conductivity of reach region
+%regid is the number of tetrahedron by one region id array
+%t2p is 3 by number of boundary triangles
+%p2 is the boundary triangle point array
+%sigdiff is the (conductivity_outer-conductivity_inter)
+%sigav is the (conductivity_inner+conductivity_outer)/2 array
+%rhotoIm is the (1/conductivity_outer-1/conductivity_inter)^(-1) array
+te2p=te2p-1;
+nte=numel(te2p)/4;
+np=numel(p)/3;np2=0;
+# int nf=countfaces(int nte,int[4,nte] te2p,int[nte] regid,inout int[1] np2);
+t2p=zeros([3,nf]);
+p2=zeros([3,np2]);
+sigdiff=zeros([nf,1]);
+sigav=zeros([nf,1]);
+rhotoIm=sigav;
+nreg=numel(unique(regid));
+regid=regid-min(regid(:));
+# makeBEMmesh(int nte,int[4,nte] te2p,double[3,np] p,double[nreg] condu,int[nte] regid,inout int[3,nf] t2p,inout double[3,np2] p2,inout double[nf] sigdiff,inout double[nf] sigav,inout double[nf] rhotoIm);
+t2p=t2p+1;
+rhotoIm=(1./(sigav+sigdiff/2)-1./(sigav-sigdiff/2)).^-1;
+
+@function ncgradn=getncrossgradN(p,tri);
+nt=numel(tri)/3;
+np=numel(p)/3;
+nhat=zeros(nt,3);
+ncgradn=zeros(3,3,nt);
+iv=eye(3);
+iv(end+1,:)=0;
+coeff=ones([4 4]);
+coeff(end,end)=0;
+for i=1:nt
+    q=p(tri(i,:),:);
+dir(3,:)=q(2,:)-q(1,:);
+dir(2,:)=q(1,:)-q(3,:);
+dir(1,:)=q(3,:)-q(2,:);
+
+nhat(i,:)=reshape([dir(2,2)*dir(3,3)-dir(2,3)*dir(3,2) ...
+                   dir(2,3)*dir(3,1)-dir(2,1)*dir(3,3) ...
+                   dir(2,1)*dir(3,2)-dir(2,2)*dir(3,1)],[1 3]);
+nhat(i,:)=nhat(i,:)/norm(nhat(i,:));
+coeff(1:3,1:end-1)=q;
+coeff(4,1:end-1)=nhat(i,:);
+abcd=coeff\iv;
+ncgradn(:,:,i)=abcd(1:3,:)';
+
+for j=1:3
+ncgradn(j,:,i)=reshape([nhat(i,2)*ncgradn(j,3,i)-nhat(i,3)*ncgradn(j,2,i) ...
+                        nhat(i,3)*ncgradn(j,1,i)-nhat(i,1)*ncgradn(j,3,i) ...
+                        nhat(i,1)*ncgradn(j,2,i)-nhat(i,2)*ncgradn(j,1,i)],[1 3]);
+end
+end
+
+
+@function [S0,Dstar0,S1,D1,col,row,area]=nearmat(t2p,p,dnear)
+%this function computes matrix entries associated with all integral operators
+if numel(t2p(:,1))~=3
+t2p=t2p';
+p=p';
+end
+nt=numel(t2p)/3;
+np=numel(p)/3;
+v1=p(:,t2p(1,:))-p(:,t2p(3,:));
+v2=p(:,t2p(2,:))-p(:,t2p(3,:));
+normal=cross(v1,v2,1);
+area=sqrt(normal(1,:).^2+normal(2,:).^2+normal(3,:).^2);
+normal(1,:)=normal(1,:)./area;
+normal(2,:)=normal(2,:)./area;
+normal(3,:)=normal(3,:)./area;
+area=area/2;
+
+del=dnear*sqrt(mean(area(:))*2);
+# FORTRAN generategroupct(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[1] ncol);
+# FORTRAN generategroupmatlab(int[3,nt] t2p,int[1] nt,double[3,np] p,int[1] np,double[1] del,output int[ncol] col,output int[ncol] row,int[1] ncol);
+row=row(col~=0);
+col=col(col~=0);
+ncols=numel(col);
+lincol=zeros(ncols,9);
+linrow=zeros(ncols,9);
+for i=1:3
+for j=1:3
+lincol(:,i+(j-1)*3)=3*(col(:)-1)+i;
+linrow(:,i+(j-1)*3)=3*(row(:)-1)+j;
+end
+end
+Dstar0=zeros([ncols 1]);
+S0=zeros([ncols 1]);
+S1=zeros([ncols 9]);
+D1=zeros([ncols 9]);
+# FORTRAN nearmat(double[3,np] p,int[1] np,int[3,nt] t2p,int[1] nt,int[ncols] row,int[ncols] col,int[1] ncols,double[3,nt] normal,double[nt] area,output double[ncols] Dstar0,output double[ncols] S0,output double[ncols,9] D1,output double[ncols,9] S1);
+Dstar0=sparse(col,row,Dstar0/(4*pi));
+S0=sparse(col,row,S0/(4*pi));
+D1=sparse(lincol(:),linrow(:),D1(:)/(4*pi));
+S1=sparse(lincol(:),linrow(:),S1(:)/(4*pi));
+end
+
+@function [S0,Dstar0,S1,D1,col,row,area]=nearmat2(t2p,p,dnear)
+%this function computes matrix entries associated with all integral operators
+if numel(t2p(:,1))~=3
+t2p=t2p';
+p=p';
+end
+nt=numel(t2p)/3;
+np=numel(p)/3;
+v1=p(:,t2p(1,:))-p(:,t2p(3,:));
+v2=p(:,t2p(2,:))-p(:,t2p(3,:));
+normal=cross(v1,v2,1);
+area=sqrt(normal(1,:).^2+normal(2,:).^2+normal(3,:).^2);
+normal(1,:)=normal(1,:)./area;
+normal(2,:)=normal(2,:)./area;
+normal(3,:)=normal(3,:)./area;
+area=area/2;
+del=dnear*sqrt(mean(area(:))*2);
+ncol=nt^2;
+[row col]=ndgrid(1:nt,1:nt);
+row=row(:);col=col(:);
+row=row(col~=0);
+col=col(col~=0);
+ncols=numel(col);
+lincol=zeros(ncols,9);
+linrow=zeros(ncols,9);
+for i=1:3
+for j=1:3
+lincol(:,i+(j-1)*3)=3*(col(:)-1)+i;
+linrow(:,i+(j-1)*3)=3*(row(:)-1)+j;
+end
+end
+Dstar0=zeros([ncols 1]);
+S0=zeros([ncols 1]);
+S1=zeros([ncols 9]);
+D1=zeros([ncols 9]);
+# FORTRAN nearmat(double[3,np] p,int[1] np,int[3,nt] t2p,int[1] nt,int[ncols] row,int[ncols] col,int[1] ncols,double[3,nt] normal,double[nt] area,output double[ncols] Dstar0,output double[ncols] S0,output double[ncols,9] D1,output double[ncols,9] S1);
+Dstar0=full(sparse(col,row,Dstar0/(4*pi)));
+S0=full(sparse(col,row,S0/(4*pi)));
+D1=full(sparse(lincol(:),linrow(:),D1(:)/(4*pi)));
+S1=full(sparse(lincol(:),linrow(:),S1(:)/(4*pi)));
+end
+
+
+@function [S0,D0,Ach,Alin,rfmm,nhatfmm]=precor(t2p,p,col,row,qord)
+%this function computes matrix entries associated with all integral operators
+if numel(t2p(:,1))~=3
+t2p=t2p';
+p=p';
+end
+nt=numel(t2p)/3;
+np=numel(p)/3;
+ncols=numel(col);
+v1=p(:,t2p(1,:))-p(:,t2p(3,:));
+v2=p(:,t2p(2,:))-p(:,t2p(3,:));
+normal=cross(v1,v2,1);
+area=sqrt(normal(1,:).^2+normal(2,:).^2+normal(3,:).^2);
+normal(1,:)=normal(1,:)./area;
+normal(2,:)=normal(2,:)./area;
+normal(3,:)=normal(3,:)./area;
+area=area/2;
+[qwt,qpt,nquad]=integrationrules2d(qord);
+qwts0=zeros([nquad nt]);
+qwts1=zeros([nquad nt 3]);
+rfmm=zeros([3 nquad nt]);
+nhatfmm=zeros([3 nquad nt]);
+col0=zeros([nquad nt]);
+row0=zeros([nquad nt]);
+col1=zeros([nquad nt 3]);
+row1=zeros([nquad nt 3]);
+rowint=zeros([ncols nquad nquad]);
+colint=zeros([ncols nquad nquad]);
+for i=1:nquad
+rfmm(1,i,:)=reshape(...
+            qpt(i,1)*p(1,t2p(1,:))+...
+            qpt(i,2)*p(1,t2p(2,:))+...
+            qpt(i,3)*p(1,t2p(3,:)),[1 1 nt]);
+rfmm(2,i,:)=reshape(...
+            qpt(i,1)*p(2,t2p(1,:))+...
+            qpt(i,2)*p(2,t2p(2,:))+...
+            qpt(i,3)*p(2,t2p(3,:)),[1 1 nt]);
+rfmm(3,i,:)=reshape(...
+            qpt(i,1)*p(3,t2p(1,:))+...
+            qpt(i,2)*p(3,t2p(2,:))+...
+            qpt(i,3)*p(3,t2p(3,:)),[1 1 nt]);
+nhatfmm(:,i,:)=reshape(normal,[3,1,nt]);
+col0(i,:)=i+(0:nt-1)*nquad;
+row0(i,:)=(1:nt);
+qwts0(i,:)=area*qwt(i);
+col1(i,:,1)=i+(0:nt-1)*nquad;
+col1(i,:,2)=i+(0:nt-1)*nquad;
+col1(i,:,3)=i+(0:nt-1)*nquad;
+row1(i,:,1)=1+3*(0:nt-1);
+row1(i,:,2)=2+3*(0:nt-1);
+row1(i,:,3)=3+3*(0:nt-1);
+qwts1(i,:,1)=qwts0(i,:)*qpt(i,1);
+qwts1(i,:,2)=qwts0(i,:)*qpt(i,2);
+qwts1(i,:,3)=qwts0(i,:)*qpt(i,3);
+for j=1:nquad
+
+colin(:,i,j)=i+(col(:)-1)*nquad;
+rowin(:,i,j)=j+(row(:)-1)*nquad;
+end
+end
+Ach=sparse(col0(:),row0(:),qwts0(:),nquad*nt,nt);
+Alin=sparse(col1(:),row1(:),qwts1(:),nquad*nt,3*nt);
+clear col0 row0 qwts0 col1 row1 qwts1;
+nfmm=nt*nquad;
+nquad2=nquad*nquad;
+# FORTRAN precorr(double[3,nfmm] rfmm,int[1] nt,int[1] nquad,int[ncols] row,int[ncols] col,int[1] ncols,double[3,nt] normal,output double[ncols,nquad2] S0,output double[ncols,nquad2] D0);
+S0=sparse(colin(:),rowin(:),S0(:)/(4*pi),nquad*nt,nquad*nt);
+D0=sparse(colin(:),rowin(:),D0(:)/(4*pi),nquad*nt,nquad*nt);
+clear colin,rowin;
+rfmm=reshape(rfmm,[3,nquad*nt]);
+nhatfmm=reshape(nhatfmm,[3,nquad*nt]);
+end
+
+
+@function y=matvecS(Achlin,rfmm,nfmm,Anear,x)
+ytemp=Achlin*(x/(4*pi));
+errfmm=10^-12;
+# FORTRAN fmmS(double[1] errfmm,double[nfmm] ytemp,double[3,nfmm] rfmm,int[1] nfmm,output double[nfmm] ytemp);
+y=Achlin'*ytemp+Anear*x;
+end
+
+
+@function y=matvecD(Achlin,rfmm,nhatfmm,nfmm,Anear,x)
+ytemp=Achlin*(x/(4*pi));
+errfmm=10^-6;
+# FORTRAN fmmD(double[1] errfmm,double[nfmm] ytemp,double[3,nfmm] rfmm,double[3,nfmm] nhatfmm,int[1] nfmm,output double[nfmm] ytemp);
+y=Achlin'*ytemp+Anear*x;
+end
+@function y=matvecDstar(Achlin,rfmm,nhatfmm,nfmm,Anear,x)
+ytemp=Achlin*(x/(4*pi));
+errfmm=10^-6;
+# FORTRAN fmmDstar(double[1] errfmm,double[nfmm] ytemp,double[3,nfmm] rfmm,double[3,nfmm] nhatfmm,int[1] nfmm,output double[nfmm] ytemp);
+y=Achlin'*ytemp+Anear*x;
+end
+
+@function y=matvecDoublelayer(NttoN,Cdiff,Alin,rfmm,nhatfmm,nfmm,Anear,x,precon)
+x(end+1)=0;
+%Doublelayer=ID/2-NttoN'*D*Cdiff*NttoN;
+y=Anear*x;
+ytemp=Alin*Cdiff*NttoN*(x/(4*pi));
+errfmm=10^-6;
+# FORTRAN fmmD(double[1] errfmm,double[nfmm] ytemp,double[3,nfmm] rfmm,double[3,nfmm] nhatfmm,int[1] nfmm,output double[nfmm] ytemp);
+y=y-NttoN'*Alin'*ytemp;
+y=precon(1:end-1).*y(1:end-1)+precon(end)*y(end)/sqrt(numel(x));
+end
+
+@function y=matvecadjDoublelayer(NttoN,Cdiff,Alin,rfmm,nhatfmm,nfmm,Anear,x,precon)
+%Doublelayer=-ID/2+NttoN'*Cdiff*Dstar*NttoN;
+y=Anear*x;
+ytemp=Alin*NttoN*(x/(4*pi));
+errfmm=10^-6;
+# FORTRAN fmmDstar(double[1] errfmm,double[nfmm] ytemp,double[3,nfmm] rfmm,double[3,nfmm] nhatfmm,int[1] nfmm,output double[nfmm] ytemp);
+y=y+NttoN'*Cdiff*Alin'*ytemp;
+y=precon(1:end).*y(1:end);
+end
+@function [pot,fld]=computeEandVsecondaryFMM(sigdiffV,sigdiffE,Alin,rfmm,nhatfmm,nfmm,robs)
+nobs=numel(robs)/3;
+Vfmm=Alin*sigdiffV;
+Efmm=Alin*sigdiffE;
+errfmm=10^-6;
+# FORTRAN fmmDEsecond(double[1] errfmm,double[nfmm] Vfmm,double[nfmm] Efmm,double[3,nfmm] rfmm,double[3,nfmm] nhatfmm,int[1] nfmm,double[3,nobs] robs,int[1] nobs,output double[nobs] pot,output double[3,nobs] fld);
+pot=pot/(4*pi);
+fld=-fld/(4*pi);
+end
+
+@function Eprimary=Eprimfmm(errfmm,rs,js,robs)
+ns=numel(rs)/3;
+nobs=numel(robs)/3;
+# FORTRAN computeEprimary(double[1] errfmm,double[3,ns] rs,double[3,ns] js,int[1] ns,double[3,nobs] robs,int[1] nobs,output double[3,nobs] Eprimary);
+end
+
+
+
+
+
+
+@function [qwt,qpt,nquad]=integrationrules2d(n)
+if (n == 1)%0
+xw=[0.33333333333333    0.33333333333333    1.00000000000000];
+elseif (n == 2)%1
+xw=[0.16666666666667    0.16666666666667    0.33333333333333
+0.16666666666667    0.66666666666667    0.33333333333333
+0.66666666666667    0.16666666666667    0.33333333333333];
+elseif (n == 3)%2
+xw=[0.33333333333333    0.33333333333333   -0.56250000000000
+0.20000000000000    0.20000000000000    0.52083333333333
+0.20000000000000    0.60000000000000    0.52083333333333
+0.60000000000000    0.20000000000000    0.52083333333333];
+elseif (n == 4)%2
+xw=[0.44594849091597    0.44594849091597    0.22338158967801
+0.44594849091597    0.10810301816807    0.22338158967801
+0.10810301816807    0.44594849091597    0.22338158967801
+0.09157621350977    0.09157621350977    0.10995174365532
+0.09157621350977    0.81684757298046    0.10995174365532
+0.81684757298046    0.09157621350977    0.10995174365532];
+elseif (n == 5)%3
+xw=[0.33333333333333    0.33333333333333    0.22500000000000
+0.47014206410511    0.47014206410511    0.13239415278851
+0.47014206410511    0.05971587178977    0.13239415278851
+0.05971587178977    0.47014206410511    0.13239415278851
+0.10128650732346    0.10128650732346    0.12593918054483
+0.10128650732346    0.79742698535309    0.12593918054483
+0.79742698535309    0.10128650732346    0.12593918054483];
+elseif (n == 6)%3
+xw=[0.24928674517091    0.24928674517091    0.11678627572638
+0.24928674517091    0.50142650965818    0.11678627572638
+0.50142650965818    0.24928674517091    0.11678627572638
+0.06308901449150    0.06308901449150    0.05084490637021
+0.06308901449150    0.87382197101700    0.05084490637021
+0.87382197101700    0.06308901449150    0.05084490637021
+0.31035245103378    0.63650249912140    0.08285107561837
+0.63650249912140    0.05314504984482    0.08285107561837
+0.05314504984482    0.31035245103378    0.08285107561837
+0.63650249912140    0.31035245103378    0.08285107561837
+0.31035245103378    0.05314504984482    0.08285107561837
+0.05314504984482    0.63650249912140    0.08285107561837];
+elseif (n == 7)
+xw=[0.33333333333333    0.33333333333333   -0.14957004446768
+0.26034596607904    0.26034596607904    0.17561525743321
+0.26034596607904    0.47930806784192    0.17561525743321
+0.47930806784192    0.26034596607904    0.17561525743321
+0.06513010290222    0.06513010290222    0.05334723560884
+0.06513010290222    0.86973979419557    0.05334723560884
+0.86973979419557    0.06513010290222    0.05334723560884
+0.31286549600487    0.63844418856981    0.07711376089026
+0.63844418856981    0.04869031542532    0.07711376089026
+0.04869031542532    0.31286549600487    0.07711376089026
+0.63844418856981    0.31286549600487    0.07711376089026
+0.31286549600487    0.04869031542532    0.07711376089026
+0.04869031542532    0.63844418856981    0.07711376089026];
+elseif (n == 8)
+xw=[0.33333333333333    0.33333333333333    0.14431560767779
+0.45929258829272    0.45929258829272    0.09509163426728
+0.45929258829272    0.08141482341455    0.09509163426728
+0.08141482341455    0.45929258829272    0.09509163426728
+0.17056930775176    0.17056930775176    0.10321737053472
+0.17056930775176    0.65886138449648    0.10321737053472
+0.65886138449648    0.17056930775176    0.10321737053472
+0.05054722831703    0.05054722831703    0.03245849762320
+0.05054722831703    0.89890554336594    0.03245849762320
+0.89890554336594    0.05054722831703    0.03245849762320
+0.26311282963464    0.72849239295540    0.02723031417443
+0.72849239295540    0.00839477740996    0.02723031417443
+0.00839477740996    0.26311282963464    0.02723031417443
+0.72849239295540    0.26311282963464    0.02723031417443
+0.26311282963464    0.00839477740996    0.02723031417443
+0.00839477740996    0.72849239295540    0.02723031417443];
+end
+nquad=numel(xw(:,1));
+qwt=xw(:,3);
+qpt=xw(:,1:2);
+qpt(:,3)=1-qpt(:,1)-qpt(:,2);
+end
+
+
+@function lap=grammsurf(t2p,p,sigav)
+np=numel(p)/3;
+nt=numel(t2p)/3;
+col=ones([nt*9 1]);
+row=ones([nt*9 1]);
+val=zeros([nt*9 1]);
+for i=1:nt
+col(9*(i-1)+1:9*i)=t2p(i,[1 1 1  2 2 2  3 3 3 ]);
+row(9*(i-1)+1:9*i)=t2p(i,[1 2 3  1 2 3  1 2 3 ]);
+Area=0.04166666666666666*norm(cross(...
+p(t2p(i,2),:)-p(t2p(i,1),:),p(t2p(i,3),:)-p(t2p(i,1),:)));
+
+val(9*(i-1)+1:9*i)=sigav(i)*[2,1,1,1,2,1,1,1,2]*Area;
+end
+lap=sparse(col,row,val,np,np);
