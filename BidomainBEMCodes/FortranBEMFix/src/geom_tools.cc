@@ -1,0 +1,690 @@
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <fstream>
+#include <math.h>
+#include <complex.h>
+#include <algorithm>
+extern "C" int countfaces(const int nte,const  int* te2p,const int* regid,int* np);
+extern "C" void makeBEMmesh(const int nte,const  int* te2p,const double* p,const double* conduvals,const int* regid,int* t2p,double* pbem,double* sigdiff,double* sigav,double* rhotoIm);
+extern "C" int countfaceslegacy(const int nte,const  int* te2p,const double* condu,int* np);
+
+extern "C" void makeBEMmeshlegacy(const int nte,const  int* te2p,const double* p,const double* condu,int* t2p,double* pbem,double* epseff);
+template <typename T> int sgn(T val) {
+    return (T(0) < val) - (val < T(0));
+}
+
+int compare_points_geomtools(const void * a, const void * b)
+{
+  return (*(int*)a - *(int*)b);
+}
+
+int compare_faces_geomtools(const void * a, const void * b)
+{
+  int i= *(int*)a - *(int*)b;
+  if (i==0) i= *((int*)a+1) - *((int*)b+1);
+  if (i==0) i= *((int*)a+2) - *((int*)b+2);
+  return (i);
+}
+
+
+int countfaces(const int nte,const  int* te2p,const int* regid,int* np)
+{
+
+  //all this just makes sorted triangles with lists of tetra pointers
+  int faces[3];
+int *faces2 = (int *)malloc(sizeof(int)*16*nte);
+  const int sh[12]={1,2,3,2,3,0,3,0,1,0,1,2};
+  int i,j,k,ii;
+  //sort matrix entries
+  for (k=0;k<nte;k++)  {
+    for (j=0;j<4;j++)  {
+      i=4*k+j;
+      faces[0]=te2p[sh[3*j  ]+k*4];
+      faces[1]=te2p[sh[3*j+1]+k*4];
+      faces[2]=te2p[sh[3*j+2]+k*4];
+
+      if (faces[0]>faces[1]){
+	if (faces[1]>faces[2]){
+	  faces2[4*i  ]=faces[2];  //third is smallest
+	  faces2[4*i+1]=faces[1];
+	  faces2[4*i+2]=faces[0];
+	}
+	else {
+	    faces2[4*i  ]=faces[1];//second is smallest
+	  if (faces[0]>faces[2]){
+	    faces2[4*i+1]=faces[2];
+	    faces2[4*i+2]=faces[0];
+	  }
+	  else{
+	    faces2[4*i+1]=faces[0];
+	    faces2[4*i+2]=faces[2];
+	  }
+	}
+      }
+      else {
+//face 1 is bigger
+	if (faces[0]>faces[2]){
+	  faces2[4*i  ]=faces[2];  //third is smallest
+	  faces2[4*i+1]=faces[0];
+	  faces2[4*i+2]=faces[1];
+	}
+	else {
+	    faces2[4*i  ]=faces[0];//first is smallest
+	  if (faces[1]>faces[2]){
+	    faces2[4*i+1]=faces[2];
+	    faces2[4*i+2]=faces[1];
+	  }
+	  else{
+	    faces2[4*i+1]=faces[1];
+	    faces2[4*i+2]=faces[2];
+	  }
+	}
+      }
+      faces2[4*i+3]=k; //global id of triangle
+    }
+  }
+  qsort((void*)faces2, 4*nte, 4*sizeof(int), compare_faces_geomtools); //sorting triangles in ascending order
+int nf=0;
+
+for (i=0;i<4*nte-1;i++){
+if ((faces2[4*i+0]==faces2[4*(i+1)+0]) && (faces2[4*i+1]==faces2[4*(i+1)+1]) && (faces2[4*i+2]==faces2[4*(i+1)+2])) {
+if (regid[faces2[4*i+3]]!=regid[faces2[4*(i+1)+3]]) {
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+i=i+1;
+
+}
+else
+{
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+}
+
+if (i==4*nte-1){
+
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+
+
+///renumber mesh to remove non boundary points
+int *facestemp = (int *)malloc(sizeof(int)*3*nf);
+  for (i=0;i<3*nf;i++)  {
+facestemp[i]=faces2[i];//value
+}
+  qsort((void*)facestemp, 3*nf, sizeof(int), compare_points_geomtools); //sorting points in ascending order
+np[0]=1;//one point
+i=0;
+  for (i=1;i<3*nf;i++)  {
+if (facestemp[i]!=facestemp[(i-1)])//is it a new point
+{
+np[0]=np[0]+1;
+}
+
+}
+
+
+return nf;
+}
+
+
+void makeBEMmesh(const int nte,const  int* te2p,const double* p,const double* conduvals,const int* regid,int* t2p,double* pbem,double* sigdiff,double* sigav,double* rhotoIm)
+{
+
+  //all this just makes sorted faces of the tetrahedron mesh
+  int faces[3];
+int *faces2 = (int *)malloc(sizeof(int)*20*nte);
+  const int sh[12]={1,2,3,2,3,0,3,0,1,0,1,2};
+  int i,j,k,ii;
+
+  //sort matrix entries
+  for (k=0;k<nte;k++)  {
+    for (j=0;j<4;j++)  {
+      i=4*k+j;
+      faces[0]=te2p[sh[3*j  ]+k*4];
+      faces[1]=te2p[sh[3*j+1]+k*4];
+      faces[2]=te2p[sh[3*j+2]+k*4];
+
+      if (faces[0]>faces[1]){
+	if (faces[1]>faces[2]){
+	  faces2[5*i  ]=faces[2];  //third is smallest
+	  faces2[5*i+1]=faces[1];
+	  faces2[5*i+2]=faces[0];
+	}
+	else {
+	    faces2[5*i  ]=faces[1];//second is smallest
+	  if (faces[0]>faces[2]){
+	    faces2[5*i+1]=faces[2];
+	    faces2[5*i+2]=faces[0];
+	  }
+	  else{
+	    faces2[5*i+1]=faces[0];
+	    faces2[5*i+2]=faces[2];
+	  }
+	}
+      }
+      else {
+//face 1 is bigger
+	if (faces[0]>faces[2]){
+	  faces2[5*i  ]=faces[2];  //third is smallest
+	  faces2[5*i+1]=faces[0];
+	  faces2[5*i+2]=faces[1];
+	}
+	else {
+	    faces2[5*i  ]=faces[0];//first is smallest
+	  if (faces[1]>faces[2]){
+	    faces2[5*i+1]=faces[2];
+	    faces2[5*i+2]=faces[1];
+	  }
+	  else{
+	    faces2[5*i+1]=faces[1];
+	    faces2[5*i+2]=faces[2];
+	  }
+	}
+      }
+      faces2[5*i+3]=k; //tetrahedron id
+      faces2[5*i+4]=te2p[4*k+j]; //interior node
+    }
+  }
+  qsort((void*)faces2, 4*nte, 5*sizeof(int), compare_faces_geomtools); //sorting triangles in ascending order
+//end generating sorted faces
+
+//all this does is extract boundary faces
+int nf=0;
+double v1[3],v2[3],outn[3],nhat[3];
+  for (i=0;i<4*nte-1;i++)  {
+
+if ((faces2[5*i+0]==faces2[5*(i+1)+0]) && (faces2[5*i+1]==faces2[5*(i+1)+1]) && (faces2[5*i+2]==faces2[5*(i+1)+2])) { //same face
+if (regid[faces2[5*i+3]]>regid[faces2[5*(i+1)+3]]) //different conductivity
+{
+
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+sigdiff[nf]=-(conduvals[regid[faces2[5*(i+1)+3]]]-conduvals[regid[faces2[5*i+3]]]);
+sigav[nf]=(conduvals[regid[faces2[5*i+3]]]+conduvals[regid[faces2[5*(i+1)+3]]])*0.5;
+rhotoIm[nf]=-((double)1/conduvals[regid[faces2[5*(i+1)+3]]]-(double)1/conduvals[regid[faces2[5*i+3]]]);
+
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])<0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+nf=nf+1;
+
+}
+else if (regid[faces2[5*i+3]]<regid[faces2[5*(i+1)+3]]) //different conductivity
+{
+
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+sigdiff[nf]=(conduvals[regid[faces2[5*(i+1)+3]]]-conduvals[regid[faces2[5*i+3]]]);
+sigav[nf]=(conduvals[regid[faces2[5*i+3]]]+conduvals[regid[faces2[5*(i+1)+3]]])*0.5;
+rhotoIm[nf]=((double)1/conduvals[regid[faces2[5*(i+1)+3]]]-(double)1/conduvals[regid[faces2[5*i+3]]]);
+
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+nf=nf+1;
+
+}
+
+i=i+1;
+
+}
+else
+{
+
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+
+
+sigdiff[nf]=(-conduvals[regid[faces2[5*i+3]]]);
+sigav[nf]=(conduvals[regid[faces2[5*i+3]]])*0.5;
+rhotoIm[nf]=-(double)1/conduvals[regid[faces2[5*i+3]]];
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+
+nf=nf+1;
+}
+}
+
+if (i==4*nte-1) {
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+
+    sigdiff[nf]=(-conduvals[regid[faces2[5*i+3]]]);
+    sigav[nf]=(conduvals[regid[faces2[5*i+3]]])*0.5;
+    rhotoIm[nf]=-(double)1/conduvals[regid[faces2[5*i+3]]];
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+nf=nf+1;
+}
+//end extracting boundary faces
+
+
+///renumber mesh to remove non boundary points
+int *facestemp = (int *)malloc(sizeof(int)*6*nf);
+  for (i=0;i<3*nf;i++)  {
+facestemp[2*i]=faces2[i];//value
+facestemp[2*i+1]=i;//where its supposed to go
+}
+  qsort((void*)facestemp, 3*nf, 2*sizeof(int), compare_points_geomtools); //sorting points in ascending order
+int np=0;//zero points have been written
+i=0;
+pbem[3*np+0]=p[3*facestemp[2*i]+0];
+pbem[3*np+1]=p[3*facestemp[2*i]+1];
+pbem[3*np+2]=p[3*facestemp[2*i]+2];
+t2p[facestemp[2*i+1]]=np;
+  for (i=1;i<3*nf;i++)  {
+if (facestemp[2*i]!=facestemp[2*(i-1)])
+{
+np=np+1;
+pbem[3*np+0]=p[3*facestemp[2*i]+0];
+pbem[3*np+1]=p[3*facestemp[2*i]+1];
+pbem[3*np+2]=p[3*facestemp[2*i]+2];
+}
+t2p[facestemp[2*i+1]]=np;
+
+
+}
+
+
+}
+
+
+int countfaceslegacy(const int nte,const  int* te2p,const double* condu,int* np)
+{
+
+  //all this just makes sorted triangles with lists of tetra pointers
+  int faces[3];
+int *faces2 = (int *)malloc(sizeof(int)*16*nte);
+  const int sh[12]={1,2,3,2,3,0,3,0,1,0,1,2};
+  int i,j,k,ii;
+  //sort matrix entries
+  for (k=0;k<nte;k++)  {
+    for (j=0;j<4;j++)  {
+      i=4*k+j;
+      faces[0]=te2p[sh[3*j  ]+k*4];
+      faces[1]=te2p[sh[3*j+1]+k*4];
+      faces[2]=te2p[sh[3*j+2]+k*4];
+
+      if (faces[0]>faces[1]){
+	if (faces[1]>faces[2]){
+	  faces2[4*i  ]=faces[2];  //third is smallest
+	  faces2[4*i+1]=faces[1];
+	  faces2[4*i+2]=faces[0];
+	}
+	else {
+	    faces2[4*i  ]=faces[1];//second is smallest
+	  if (faces[0]>faces[2]){
+	    faces2[4*i+1]=faces[2];
+	    faces2[4*i+2]=faces[0];
+	  }
+	  else{
+	    faces2[4*i+1]=faces[0];
+	    faces2[4*i+2]=faces[2];
+	  }
+	}
+      }
+      else {
+//face 1 is bigger
+	if (faces[0]>faces[2]){
+	  faces2[4*i  ]=faces[2];  //third is smallest
+	  faces2[4*i+1]=faces[0];
+	  faces2[4*i+2]=faces[1];
+	}
+	else {
+	    faces2[4*i  ]=faces[0];//first is smallest
+	  if (faces[1]>faces[2]){
+	    faces2[4*i+1]=faces[2];
+	    faces2[4*i+2]=faces[1];
+	  }
+	  else{
+	    faces2[4*i+1]=faces[1];
+	    faces2[4*i+2]=faces[2];
+	  }
+	}
+      }
+      faces2[4*i+3]=k; //global id of triangle
+    }
+  }
+  qsort((void*)faces2, 4*nte, 4*sizeof(int), compare_faces_geomtools); //sorting triangles in ascending order
+int nf=0;
+
+for (i=0;i<4*nte-1;i++){
+if ((faces2[4*i+0]==faces2[4*(i+1)+0]) && (faces2[4*i+1]==faces2[4*(i+1)+1]) && (faces2[4*i+2]==faces2[4*(i+1)+2])) {
+if (condu[faces2[4*i+3]]!=condu[faces2[4*(i+1)+3]]) {
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+i=i+1;
+
+}
+else
+{
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+}
+
+if (i==4*nte-1){
+
+faces2[3*nf+0]=faces2[4*i+0];
+faces2[3*nf+1]=faces2[4*i+1];
+faces2[3*nf+2]=faces2[4*i+2];
+nf=nf+1;
+}
+
+
+///renumber mesh to remove non boundary points
+int *facestemp = (int *)malloc(sizeof(int)*3*nf);
+  for (i=0;i<3*nf;i++)  {
+facestemp[i]=faces2[i];//value
+}
+  qsort((void*)facestemp, 3*nf, sizeof(int), compare_points_geomtools); //sorting points in ascending order
+np[0]=1;//one point
+i=0;
+  for (i=1;i<3*nf;i++)  {
+if (facestemp[i]!=facestemp[(i-1)])//is it a new point
+{
+np[0]=np[0]+1;
+}
+
+}
+
+
+return nf;
+}
+
+
+
+void makeBEMmeshlegacy(const int nte,const  int* te2p,const double* p,const double* condu,int* t2p,double* pbem,double* epseff)
+{
+
+  //all this just makes sorted faces of the tetrahedron mesh
+  int faces[3];
+int *faces2 = (int *)malloc(sizeof(int)*20*nte);
+  const int sh[12]={1,2,3,2,3,0,3,0,1,0,1,2};
+  int i,j,k,ii;
+
+  //sort matrix entries
+  for (k=0;k<nte;k++)  {
+    for (j=0;j<4;j++)  {
+      i=4*k+j;
+      faces[0]=te2p[sh[3*j  ]+k*4];
+      faces[1]=te2p[sh[3*j+1]+k*4];
+      faces[2]=te2p[sh[3*j+2]+k*4];
+
+      if (faces[0]>faces[1]){
+	if (faces[1]>faces[2]){
+	  faces2[5*i  ]=faces[2];  //third is smallest
+	  faces2[5*i+1]=faces[1];
+	  faces2[5*i+2]=faces[0];
+	}
+	else {
+	    faces2[5*i  ]=faces[1];//second is smallest
+	  if (faces[0]>faces[2]){
+	    faces2[5*i+1]=faces[2];
+	    faces2[5*i+2]=faces[0];
+	  }
+	  else{
+	    faces2[5*i+1]=faces[0];
+	    faces2[5*i+2]=faces[2];
+	  }
+	}
+      }
+      else {
+//face 1 is bigger
+	if (faces[0]>faces[2]){
+	  faces2[5*i  ]=faces[2];  //third is smallest
+	  faces2[5*i+1]=faces[0];
+	  faces2[5*i+2]=faces[1];
+	}
+	else {
+	    faces2[5*i  ]=faces[0];//first is smallest
+	  if (faces[1]>faces[2]){
+	    faces2[5*i+1]=faces[2];
+	    faces2[5*i+2]=faces[1];
+	  }
+	  else{
+	    faces2[5*i+1]=faces[1];
+	    faces2[5*i+2]=faces[2];
+	  }
+	}
+      }
+      faces2[5*i+3]=k; //tetrahedron id
+      faces2[5*i+4]=te2p[4*k+j]; //interior node
+    }
+  }
+  qsort((void*)faces2, 4*nte, 5*sizeof(int), compare_faces_geomtools); //sorting triangles in ascending order
+//end generating sorted faces
+
+//all this does is extract boundary faces
+int nf=0;
+double v1[3],v2[3],outn[3],nhat[3];
+  for (i=0;i<4*nte-1;i++)  {
+
+if ((faces2[5*i+0]==faces2[5*(i+1)+0]) && (faces2[5*i+1]==faces2[5*(i+1)+1]) && (faces2[5*i+2]==faces2[5*(i+1)+2])) { //same face
+if (condu[faces2[5*i+3]]!=condu[faces2[5*(i+1)+3]]) //different conductivity
+{
+
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+epseff[nf]=(condu[faces2[5*i+3]]-condu[faces2[5*(i+1)+3]])/(condu[faces2[5*i+3]]+condu[faces2[5*(i+1)+3]]);
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+nf=nf+1;
+
+}
+i=i+1;
+
+}
+else
+{
+
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+epseff[nf]=1;
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+
+nf=nf+1;
+}
+}
+
+if (i==4*nte-1) {
+    v1[0]=p[3*faces2[5*i+0]  ]-p[3*faces2[5*i+2]  ];
+    v1[1]=p[3*faces2[5*i+0]+1]-p[3*faces2[5*i+2]+1];
+    v1[2]=p[3*faces2[5*i+0]+2]-p[3*faces2[5*i+2]+2];
+
+    v2[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+2]  ];
+    v2[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+2]+1];
+    v2[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+2]+2];
+
+    outn[0]=p[3*faces2[5*i+1]  ]-p[3*faces2[5*i+4]];
+    outn[1]=p[3*faces2[5*i+1]+1]-p[3*faces2[5*i+4]+1];
+    outn[2]=p[3*faces2[5*i+1]+2]-p[3*faces2[5*i+4]+2];
+    nhat[0]=v1[1]*v2[2]-v1[2]*v2[1];
+    nhat[1]=v1[2]*v2[0]-v1[0]*v2[2];
+    nhat[2]=v1[0]*v2[1]-v1[1]*v2[0];
+epseff[nf]=1;
+if (sgn(nhat[0]*outn[0]+nhat[1]*outn[1]+nhat[2]*outn[2])>0){
+faces2[3*nf+0]=faces2[5*i+0];
+faces2[3*nf+1]=faces2[5*i+1];
+faces2[3*nf+2]=faces2[5*i+2];
+}
+else{
+j=faces2[5*i+0];
+faces2[3*nf+0]=faces2[5*i+1];
+faces2[3*nf+1]=j;
+faces2[3*nf+2]=faces2[5*i+2];
+}
+nf=nf+1;
+}
+//end extracting boundary faces
+
+
+///renumber mesh to remove non boundary points
+int *facestemp = (int *)malloc(sizeof(int)*6*nf);
+  for (i=0;i<3*nf;i++)  {
+facestemp[2*i]=faces2[i];//value
+facestemp[2*i+1]=i;//where its supposed to go
+}
+  qsort((void*)facestemp, 3*nf, 2*sizeof(int), compare_points_geomtools); //sorting points in ascending order
+int np=0;//zero points have been written
+i=0;
+pbem[3*np+0]=p[3*facestemp[2*i]+0];
+pbem[3*np+1]=p[3*facestemp[2*i]+1];
+pbem[3*np+2]=p[3*facestemp[2*i]+2];
+t2p[facestemp[2*i+1]]=np;
+  for (i=1;i<3*nf;i++)  {
+if (facestemp[2*i]!=facestemp[2*(i-1)])
+{
+np=np+1;
+pbem[3*np+0]=p[3*facestemp[2*i]+0];
+pbem[3*np+1]=p[3*facestemp[2*i]+1];
+pbem[3*np+2]=p[3*facestemp[2*i]+2];
+}
+t2p[facestemp[2*i+1]]=np;
+
+
+}
+
+
+}
