@@ -1,0 +1,141 @@
+% function bidomainHeteroRectBath(simid)
+addpath('./FortranBEMFix/matlab')
+addpath('./FortranBEMFix/matlab/NeuronScripts/')
+addpath('./channeldynamics/')
+addpath('./FEM/')
+addpath('./Meshing/')
+addpath('./Meshing/mesh/')
+addpath('./Meshing/matrix/')
+addpath('./JNE_Review_Supplementatl_meshes/ComsolMesh/')
+
+rl=1;
+FEMord=1;
+
+%Titrated Ampval(FEM)
+ampval = 10^-3;
+
+%waveform information
+close all
+Iinject=@(t) (t/(5*10^-5).*(t<5*10^-5)+(t>=5*10^-5)).*(t<5*10^-3);
+dur1=10*10^-2;
+dur=20*10^-3;
+dt=1*10^-5;
+tarr=0:dt:dur;
+N=numel(tarr);
+wave=zeros(size(tarr));
+wave(1:numel(tarr))=Iinject(tarr-0.0002).*(tarr>0.0002);
+
+
+%% Initalize Geometry
+load('2LayerRectBath.mat','p','tri','id','V','F')
+% trisurf(tri,p(:,1),p(:,2),p(:,3),'edgealpha',0.2,'facealpha',0.2,'facecolor','#FF0000')
+p_sur = p;
+clear p
+
+[p_vol,te2p,t2p,sigmap]=loadfem('mergebox');
+
+%%
+% if debug==1
+% %quiver3(rv(:,1),rv(:,2),rv(:,3),Jdc(:,1),Jdc(:,2),Jdc(:,3))
+% hold on
+% trisurf(tri2',p2(1,:)',p2(2,:)',p2(3,:)',elecid2,'facealpha',.2)
+% end
+%%
+
+
+%% Define material parameters
+
+sig=[1/rl 0.276 1.654];
+sigarr = zeros(numel(sigmap),1);
+sigav=zeros(numel(id),1);
+sigdiff=zeros(numel(id),1);
+rhotoIm=zeros(numel(p_sur)/3,1);
+
+sigarr(sigmap==1) = sig(1);
+sigarr(sigmap==2) = sig(2);
+sigarr(sigmap==3) = sig(3);
+
+sigav(id==1) = (sig(1)+sig(2))/2;
+sigav(id==2) = (sig(2)+sig(3))/2;
+sigav(id==3) = (sig(3)+0)/2;
+
+sigdiff(id==1) = (sig(2)-sig(1));
+sigdiff(id==2) = (sig(3)-sig(2));
+sigdiff(id==3) = (0-sig(3));
+
+rhotoIm(1:810) = 1./sig(2) -1./sig(1);
+rhotoIm(811:end) = 0;
+
+%FEM Solution
+getRow = @(data, rowNum) reshape(data(:,10:N),[],1); % Helper function
+thfunc=@(amp) max(getRow(TESbidomainFEM(wave,-amp,tarr,'CN2',p_vol',te2p',sig,sigmap,FEMord)))>0;
+
+% FEMampval=findthreshold(@(amp) thfunc(amp),0.1,10^-3,.01)
+% 
+% tic
+% [soln Imstore pb_in pb_ex p_mem t_mem,rhsF1] = TESbidomainFEM(wave,-FEMampval,tarr,'CN2',p_vol',te2p',sig,sigmap,FEMord);
+% toc
+% max(max(soln))
+
+    %%
+
+%BEM Solution
+elecid2 = zeros([numel(tri)/3 1]);
+pcen=(p_sur(tri(:,1),:)+p_sur(tri(:,2),:)+p_sur(tri(:,3),:))/3;
+elecdir=2;
+for i=1:numel(pcen)/3
+    if(pcen(i,elecdir)<=min(pcen(:,elecdir))+.000001)
+        elecid2(i) = 1;
+    elseif(pcen(i,elecdir)>=max(pcen(:,elecdir))-.000001)
+        elecid2(i) = -1;
+    end
+end
+RHS=DBSRHS(elecid2,tri',p_sur');
+[ Vmem2 Im2 rho2 t_mem2 p_mem1 tria pa BEM2]=bidomainBEM(RHS,wave,-1,tarr,'CN2',p_sur',tri',sigav,sigdiff,rhotoIm,1:(numel(V)/3),sig);
+
+getRow = @(data, rowNum) reshape(data(:,10:N),[],1); % Helper function
+thfunc=@(amp) max(getRow(bidomainBEM(RHS,wave,-amp,tarr,'CN2',p_sur',tri',sigav,sigdiff,rhotoIm,1:numel(V)/3,sig,BEM2)))>0;
+
+BEMampval=findthreshold(@(amp) thfunc(amp),0.1,10^-3,.01)
+tic
+[ Vmem2 Im2 rho2 t_mem2 p_mem1 tria pa BEM2]=bidomainBEM(RHS,wave,-BEMampval,tarr,'CN2',p_sur',tri',sigav,sigdiff,rhotoIm,1:numel(V)/3,sig,BEM2);
+toc
+max(max(Vmem2))
+
+%Spatial Plots
+tarr = 1000*tarr;
+Vmem2 = 1000*Vmem2;
+soln = 1000*soln;
+TES_Validation = figure;
+a = p_mem - [0 0.0032 10^-6];
+maga = sqrt(a(:,1).^2 + a(:,2).^2+ a(:,3).^2);
+b = p_mem - [0 0.0008 10^-6];
+magb = sqrt(b(:,1).^2 + b(:,2).^2+ b(:,3).^2);
+[~,id221] = min(maga);
+[~,id222] = min(magb);
+[~,id31]=min(abs(V(:,1)-p_mem(id221,1))+abs(V(:,2)-0.0032)+abs(V(:,3)-p_mem(id221,3)));
+[~,id32]=min(abs(V(:,1)-p_mem(id222,1))+abs(V(:,2)-0.0008)+abs(V(:,3)-p_mem(id222,3)));
+
+xlabel("time (ms)",'FontSize', 10)
+yyaxis left
+plot(tarr,soln(id221,:),'LineStyle','-','Color',"#8B0000",'LineWidth', 3) %Dark Red
+hold on
+plot(tarr,soln(id222,:),'LineStyle','-','Color',"#ff474c",'LineWidth', 3) %Light Red
+plot(tarr,Vmem2(id31,:),'LineStyle','-','Color',"#ADD8E6",'LineWidth', 3) %light blue
+plot(tarr,Vmem2(id32,:),'LineStyle','-','Color',"#000080",'LineWidth', 3)% blue
+% xlim([0,16])
+ylabel("Voltage (mV)",'FontSize', 10)
+ylim([-80 50])
+hold off
+yyaxis right 
+plot(tarr,1000*FEMampval*wave,'-r','LineWidth', 3)
+ylabel("Current (mA)",'FontSize', 10)
+xlabel("time (ms)",'FontSize', 10)
+% xlim([0 5])
+% ylim([0 25])
+TES_Validation.Units='inches';
+TES_Validation.Position=[-8.0104 4.9792 2 2];
+lgd2=legend('FEM-1/5','FEM-4/5','BEM-1/5','BEM-4/5');
+lgd2.NumColumns = 4;
+% save(strcat('hetbox_results',num2str(simid),'.mat'), "soln","Vmem2","tarr","p_sur","tri")
+% end
