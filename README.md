@@ -1,2 +1,16 @@
 Simulation code for D. Czerwonky, A. Aberra, and L. J. Gomez, "A Boundary Element Method of Bidomain Modeling for Predicting Cellular Responses to Electromagnetic Fields," Journal of Neural Engineering, In review. 
 
+Code Overview
+
+We provide two folders of codes: 
+  (1) the bidomain codes
+  (2) the hybrid cable codes
+
+The BidomainCodes folder contains our implementations of bidomain integral equation derived in the above Journal of Neural Engineering Publication. This implementation leverages MATLAB with the support of C, and Fortran libaries to solve the bidomain integral equation. We provide testing scripts for simplistic transcanial electric stimulation (TES), transcranial magnetic stimulation (TMS), and deep brain stimulation (DBS) scenarios.  
+
+The HybridCableCodes folder contains a MATLAB implementation of the Hybrid Cable approach as detailed in figure 1 of Joucla, S., Glière, A., & Yvert, B. (2014). Current approaches to model extracellular electrical neural microstimulation. Frontiers in computational neuroscience, 8, 13. The only difference is that instead of using an FEM solver, we use a modified set of 0th order BEM codes orginally from the following repository: https://github.com/luisgo/TMS_Efield_Solvers.
+
+
+System requirements
+
+All codes require a 64-bit system and Windows operating systems. All codes require an instillation of MATLAB 2021b or later. The bidomain solver codes are unacclerated so running the codes is computationally expensive. We recommend using simple test scenarios with less than 5,000 triangle elements for a system with 32 GB of memory or less.
