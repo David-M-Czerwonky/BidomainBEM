@@ -1,1 +1,14 @@
-
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Czerwonky"
+  given-names: "David"
+  orcid: "https://orcid.org/0009-0001-5560-4835"
+- family-names: "Gomez"
+  given-names: "Luis"
+  orcid: "https://orcid.org/0000-0002-7699-2160"
+title: "Bidomain BEM"
+version: 1
+doi:
+date-released: 2024-05-10
+url: "https://github.com/David-M-Czerwonky/BidomainBEM"
