@@ -13,4 +13,4 @@ The HybridCableCodes folder contains a MATLAB implementation of the Hybrid Cable
 
 System requirements
 
-All codes require a 64-bit system and Windows operating systems. All codes require an instillation of MATLAB 2021b or later. The bidomain solver codes are unacclerated so running the codes is computationally expensive. We recommend using simple test scenarios with less than 5,000 triangle elements for a system with 32 GB of memory or less.
+All codes require a 64-bit system and Windows operating systems. All codes require an instillation of MATLAB 2021b or later. The bidomain solver codes are unacclerated so running the codes is computationally expensive. We recommend using simple test scenarios with less than 5,000 triangle elements for a system with 32 GB of RAM memory or less.
