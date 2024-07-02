@@ -1,4 +1,4 @@
-Simulation code for D. Czerwonky, A. Aberra, and L. J. Gomez, "A Boundary Element Method of Bidomain Modeling for Predicting Cellular Responses to Electromagnetic Fields," Journal of Neural Engineering, In review. 
+Simulation code for Czerwonky, D. M., Aberra, A. S., & Gomez, L. J. (2023). A boundary element method of bidomain modeling for predicting cellular responses to electromagnetic fields. Journal of Neural Engineering. Read it here: https://iopscience.iop.org/article/10.1088/1741-2552/ad5704/meta  
 
 Code Overview
 
