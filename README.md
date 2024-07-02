@@ -3,7 +3,7 @@ Simulation code for D. Czerwonky, A. Aberra, and L. J. Gomez, "A Boundary Elemen
 Code Overview
 
 We provide two folders of codes: 
-  (1) the bidomain codes
+  (1) the bidomain BEM codes
   (2) the hybrid cable codes
 
 The BidomainCodes folder contains our implementations of bidomain integral equation derived in the above Journal of Neural Engineering Publication. This implementation leverages MATLAB with the support of C, and Fortran libaries to solve the bidomain integral equation. We provide testing scripts for simplistic transcanial electric stimulation (TES), transcranial magnetic stimulation (TMS), and deep brain stimulation (DBS) scenarios.  
